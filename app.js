@@ -1,64 +1,102 @@
-var express = require('express');
-require('dotenv').config();
+var express = require("express");
+require("dotenv").config();
 var app = express();
-var ldap = require('ldapjs');
+var ldap = require("ldapjs");
 
 app.listen(3000, function () {
-    console.log("server started")
-})
-
-/*update the url according to your ldap address*/
-var client = ldap.createClient({
-    url: 'ldap://10.10.0.55:389'
+  console.log("server started");
 });
 
-/*use this to create connection*/
-function authenticateDN(username, password) {
+var client = ldap.createClient({
+  url: "ldap://10.10.0.55:389",
+});
 
-    /*bind use for authentication*/
-    client.bind(username, password, function (err) {
-        if (err) {
-            console.log("Error in new connetion " + err)
-        } else {
-            /*if connection is success then go for any operation*/
-            console.log("Success");
-            searchUser();            
-            //modifyDN('cn=bar,ou=users,ou=system');
-
-        }
-    });
+function authenticateDN(username, password, callback) {
+  client.bind(username, password, (err) => {
+    if (err) {
+      console.log("Error en la conexión: " + err);
+      callback(err);
+    } else {
+      console.log("Conexión exitosa");
+      callback(null);
+    }
+  });
 }
 
-/*use this to search user, add your condition inside filter*/
-function searchUser() {
-    var opts = {        
-        filter: '(|(uid=2)(sn=John)(cn=Smith))', // or search
-        scope: 'sub',
-        attributes: ['sn']
-    };
+app.get("/buscar", (req, res) => {
+  const user = req.query.usuario;
+  console.log("buscar: " + user);
+  authenticateDN(process.env.CN, process.env.PASSWORD, (err) => {
+    if (err) {
+      res.status(400).json({
+        result: {
+          error: 1,
+          message: "Conexión a servidor LDAP fallida",
+        },
+      });
+      return;
+    }
+  });
 
-    client.search('ou=users,ou=system', opts, function (err, res) {
-        if (err) {
-            console.log("Error in search " + err)
-        } else {
-            res.on('searchEntry', function (entry) {
-                console.log('entry: ' + JSON.stringify(entry.object));
-            });
-            res.on('searchReference', function (referral) {
-                console.log('referral: ' + referral.uris.join());
-            });
-            res.on('error', function (err) {
-                console.error('error: ' + err.message);
-            });
-            res.on('end', function (result) {
-                console.log('status: ' + result.status);
-            });
-        }
+  var options = {
+    filter: `(sAMAccountName=${user})`, // Filtro de búsqueda
+    scope: "sub", // Alcance de la búsqueda
+    attributes: [
+      "dn",
+      "st",
+      "l",
+      "givenName",
+      "sn",
+      "cn",
+      "displayName",
+      "mail",
+      "telephoneNumber",
+      "title",
+      "department",
+      "company",
+      "memberOf",
+      "lastLogonTimestamp",
+    ],
+  };
+
+  client.search("DC=vinte,DC=com", options, (err, searchRes) => {
+    if (err) {
+      console.log("Error en la búsqueda: " + err);
+      return res.status(500).send("Error en la búsqueda");
+    }
+
+    searchRes.on("searchRequest", (searchRequest) => {
+      console.log("searchRequest: ", searchRequest.messageId);
     });
-}
 
+    let entries = [];
+    searchRes.on("searchEntry", (entry) => {
+      // Acceder al DN
+      let dn = entry.dn.toString();
+      let attributes = {};
+      entry.attributes.forEach((attribute) => {
+        //console.log(attribute.type + ": " + attribute.values);
+        attributes[attribute.type] = attribute.values
+          ? attribute.values[0]
+          : "";
+      });
+      // Member Of
 
+      entries.push({
+        dn: dn,
+        attributes: attributes,
+      });
+    });
 
+    searchRes.on("end", (result) => {
+      if (result.status !== 0) {
+        return res.status(500).send("Error en la búsqueda");
+      }
+      res.json(entries); // Enviar los resultados como respuesta
+    });
 
-/*create authentication*/
-authenticateDN(process.env.CN, process.env.PASSWORD)
+    searchRes.on("error", (err) => {
+      res.status(500).send("Error en la búsqueda");
+    });
+  });
+});
